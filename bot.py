@@ -36,7 +36,7 @@ class Player:
 
 # -------------------- Load data --------------------
 def norm(s: str) -> str:
-    return " ".join(s.strip().lower().split())
+    return " ".join(str(s).strip().lower().split())
 
 def load_players() -> Tuple[Dict[str, Player], Dict[str, str]]:
     with open(PLAYERS_PATH, "r", encoding="utf-8") as f:
@@ -93,55 +93,129 @@ def puzzle_player_of_the_day(today: Optional[dt.date] = None) -> Player:
 # -------------------- Spotle-like tiles --------------------
 GREEN = "🟩"
 YELLOW = "🟨"
-RED = "🟥"
+GREY = "⬛️"  # вместо красного (серый/тёмный)
 
 POS_RU = {"GK": "Вратарь", "DEF": "Защитник", "MID": "Полузащитник", "FWD": "Нападающий"}
 
-def arrow(guess_val: int, answer_val: int) -> str:
+def arrow_need(guess_val: int, answer_val: int) -> str:
+    """
+    Стрелка "куда двигаться", чтобы попасть:
+    - если ответ БОЛЬШЕ догадки -> нужно ↑
+    - если ответ МЕНЬШЕ догадки -> нужно ↓
+    """
     if guess_val == answer_val:
         return "✅"
-    return "⬆️" if guess_val < answer_val else "⬇️"
+    return "⬆️" if answer_val > guess_val else "⬇️"
 
 def color_numeric(guess_val: int, answer_val: int, near_delta: int) -> str:
     if guess_val == answer_val:
         return GREEN
     if abs(guess_val - answer_val) <= near_delta:
         return YELLOW
-    return RED
+    return GREY
 
 def color_bool(ok: bool) -> str:
-    return GREEN if ok else RED
+    return GREEN if ok else GREY
 
 def tile(prefix: str, value: str, color: str, arrow_txt: str = "") -> str:
-    # пример: 🟨 Debut: 2002 ⬆️
     extra = f" {arrow_txt}" if arrow_txt else ""
     return f"{color} {prefix}: {value}{extra}"
 
-def build_feedback_spotle(guess: Player, answer: Player) -> str:
-    # Debut: near +/-2 years
-    debut_color = color_numeric(guess.debut_year, answer.debut_year, near_delta=2)
-    debut_arrow = arrow(guess.debut_year, answer.debut_year) if guess.debut_year != answer.debut_year else "✅"
+# --- Continents dictionary (расширяй под свои страны) ---
+COUNTRY_TO_CONTINENT = {
+    # Europe
+    "italy": "europe",
+    "france": "europe",
+    "spain": "europe",
+    "portugal": "europe",
+    "england": "europe",
+    "uk": "europe",
+    "united kingdom": "europe",
+    "netherlands": "europe",
+    "germany": "europe",
+    "croatia": "europe",
+    "serbia": "europe",
+    "belgium": "europe",
+    "poland": "europe",
+    "sweden": "europe",
+    "norway": "europe",
+    "denmark": "europe",
+    "switzerland": "europe",
+    "austria": "europe",
+    "russia": "europe",
 
-    # Club: exact
+    # North America
+    "usa": "north_america",
+    "united states": "north_america",
+    "mexico": "north_america",
+    "canada": "north_america",
+
+    # South America
+    "brazil": "south_america",
+    "argentina": "south_america",
+    "uruguay": "south_america",
+    "colombia": "south_america",
+    "chile": "south_america",
+
+    # Asia
+    "japan": "asia",
+    "south korea": "asia",
+    "korea": "asia",
+    "china": "asia",
+    "iran": "asia",
+    "saudi arabia": "asia",
+    "turkey": "asia",
+
+    # Africa
+    "nigeria": "africa",
+    "senegal": "africa",
+    "egypt": "africa",
+    "morocco": "africa",
+    "cameroon": "africa",
+
+    # Oceania
+    "australia": "oceania",
+    "new zealand": "oceania",
+}
+
+def continent_of(country: str) -> str:
+    return COUNTRY_TO_CONTINENT.get(norm(country), "unknown")
+
+def country_color(guess_country: str, answer_country: str) -> str:
+    if norm(guess_country) == norm(answer_country):
+        return GREEN
+    g_cont = continent_of(guess_country)
+    a_cont = continent_of(answer_country)
+    if g_cont != "unknown" and g_cont == a_cont:
+        return YELLOW
+    return GREY
+
+def build_feedback_spotle(guess: Player, answer: Player) -> str:
+    # Debut: близко +/-2 года
+    debut_color = color_numeric(guess.debut_year, answer.debut_year, near_delta=2)
+    debut_arrow = arrow_need(guess.debut_year, answer.debut_year)
+
+    # Club: точное совпадение
     club_ok = norm(guess.iconic_club) == norm(answer.iconic_club)
     club_color = color_bool(club_ok)
     club_value = f"{guess.club_emoji} {guess.iconic_club}".strip()
 
-    # FIFA: near +/-20
+    # FIFA: близко +/-20, стрелка "куда двигаться"
+    # пример из твоего сообщения:
+    # answer=88, guess=92 -> answer меньше -> нужно ↓
     fifa_color = color_numeric(guess.fifa_rating, answer.fifa_rating, near_delta=20)
-    fifa_arrow = arrow(guess.fifa_rating, answer.fifa_rating) if guess.fifa_rating != answer.fifa_rating else "✅"
+    fifa_arrow = arrow_need(guess.fifa_rating, answer.fifa_rating)
 
-    # Awards: near +/-1
+    # Awards: близко +/-1, стрелка "куда двигаться"
     awards_color = color_numeric(guess.top_awards, answer.top_awards, near_delta=1)
-    awards_arrow = arrow(guess.top_awards, answer.top_awards) if guess.top_awards != answer.top_awards else "✅"
+    awards_arrow = arrow_need(guess.top_awards, answer.top_awards)
 
-    # Position: exact group
+    # Position: точное совпадение группы
     pos_ok = guess.position_group == answer.position_group
     pos_color = color_bool(pos_ok)
 
-    # Country: exact
-    ctry_ok = norm(guess.birth_country) == norm(answer.birth_country)
-    ctry_color = color_bool(ctry_ok)
+    # Country: green exact, yellow same continent, grey otherwise
+    ctry_color = country_color(guess.birth_country, answer.birth_country)
 
     tiles = [
         tile("Debut", str(guess.debut_year), debut_color, debut_arrow),
@@ -152,18 +226,14 @@ def build_feedback_spotle(guess: Player, answer: Player) -> str:
         tile("Country", guess.birth_country, ctry_color, ""),
     ]
 
-    # 2 строки по 3 плитки (как “6 прямоугольничков”)
+    # 2 строки по 3 "прямоугольника"
     line1 = " | ".join(tiles[:3])
     line2 = " | ".join(tiles[3:])
-
     return f"{line1}\n{line2}"
 
 def resolve_guess_to_player(text: str) -> Optional[Player]:
-    key = norm(text)
-    pid = ALIAS_TO_ID.get(key)
-    if not pid:
-        return None
-    return PLAYERS_BY_ID[pid]
+    pid = ALIAS_TO_ID.get(norm(text))
+    return PLAYERS_BY_ID.get(pid) if pid else None
 
 
 # -------------------- DB --------------------
@@ -268,7 +338,7 @@ async def cmd_help(m: Message):
         "Обозначения:\n"
         "🟩 точно\n"
         "🟨 близко\n"
-        "🟥 далеко/не совпало\n"
+        "⬛️ далеко/не совпало\n"
         "⬆️ нужно больше / позже\n"
         "⬇️ нужно меньше / раньше\n\n"
         f"Попыток в одном забеге: {MAX_ATTEMPTS}\n"
@@ -298,7 +368,6 @@ async def cmd_status(m: Message):
         await m.answer("Сегодня попыток ещё нет. Нажми /play")
         return
 
-    # Показать “как в спотле”: каждая попытка = 2 строки плиток
     blocks = []
     for n, guess, fb in hist:
         blocks.append(f"{n}) {guess}\n{fb}")
@@ -322,7 +391,6 @@ async def on_guess(m: Message):
 
         attempts = row[0] if row else 0
 
-        # лимит попыток
         if attempts >= MAX_ATTEMPTS:
             await finish_run(db, m.from_user.id, day)
             await db.commit()
@@ -332,14 +400,12 @@ async def on_guess(m: Message):
         fb = build_feedback_spotle(guess_player, answer)
         await add_attempt(db, m.from_user.id, day, m.text, fb)
 
-        # победа?
         if guess_player.id == answer.id:
             await finish_run(db, m.from_user.id, day)
             await db.commit()
             await m.answer(f"🎉 Верно!\n{fb}\n\n✅ Победа за {attempts+1}/{MAX_ATTEMPTS}!\n/play — сыграть заново.")
             return
 
-        # последняя попытка?
         if attempts + 1 >= MAX_ATTEMPTS:
             await finish_run(db, m.from_user.id, day)
             await db.commit()
