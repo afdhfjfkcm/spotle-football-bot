@@ -31,6 +31,7 @@ class Player:
     top_awards: int
     position_group: str  # GK/DEF/MID/FWD
     birth_country: str
+    club_emoji: str = ""  # optional
 
 
 # -------------------- Load data --------------------
@@ -55,6 +56,7 @@ def load_players() -> Tuple[Dict[str, Player], Dict[str, str]]:
             top_awards=int(x["top_awards"]),
             position_group=str(x["position_group"]).upper(),
             birth_country=str(x["birth_country"]),
+            club_emoji=str(x.get("club_emoji", "") or ""),
         )
         by_id[p.id] = p
 
@@ -88,41 +90,73 @@ def puzzle_player_of_the_day(today: Optional[dt.date] = None) -> Player:
     return PLAYERS_BY_ID[pid]
 
 
-# -------------------- Feedback (Spotle-like) --------------------
-def arrow_compare(guess_val: int, answer_val: int) -> str:
-    if guess_val == answer_val:
-        return "✅"
-    return "↑" if guess_val < answer_val else "↓"
-
-def eq_mark(guess: str, answer: str) -> str:
-    return "✅" if norm(guess) == norm(answer) else "❌"
+# -------------------- Spotle-like tiles --------------------
+GREEN = "🟩"
+YELLOW = "🟨"
+RED = "🟥"
 
 POS_RU = {"GK": "Вратарь", "DEF": "Защитник", "MID": "Полузащитник", "FWD": "Нападающий"}
 
-def build_feedback(guess: Player, answer: Player) -> str:
-    year_mark  = arrow_compare(guess.debut_year, answer.debut_year)
-    fifa_mark  = arrow_compare(guess.fifa_rating, answer.fifa_rating)
-    award_mark = arrow_compare(guess.top_awards, answer.top_awards)
+def arrow(guess_val: int, answer_val: int) -> str:
+    if guess_val == answer_val:
+        return "✅"
+    return "⬆️" if guess_val < answer_val else "⬇️"
 
-    club_mark = eq_mark(guess.iconic_club, answer.iconic_club)
-    pos_mark  = "✅" if guess.position_group == answer.position_group else "❌"
-    ctry_mark = eq_mark(guess.birth_country, answer.birth_country)
+def color_numeric(guess_val: int, answer_val: int, near_delta: int) -> str:
+    if guess_val == answer_val:
+        return GREEN
+    if abs(guess_val - answer_val) <= near_delta:
+        return YELLOW
+    return RED
 
-    row = (
-        f"Дебют {year_mark} | Клуб {club_mark} | FIFA {fifa_mark} | Награды {award_mark} | "
-        f"Позиция {pos_mark} | Страна {ctry_mark}"
-    )
+def color_bool(ok: bool) -> str:
+    return GREEN if ok else RED
 
-    details = (
-        f"\n\nТвоя догадка: {guess.name}\n"
-        f"• Дебют: {guess.debut_year}\n"
-        f"• Iconic club: {guess.iconic_club}\n"
-        f"• FIFA: {guess.fifa_rating}\n"
-        f"• Топ-награды: {guess.top_awards}\n"
-        f"• Позиция: {POS_RU.get(guess.position_group, guess.position_group)}\n"
-        f"• Страна рождения: {guess.birth_country}"
-    )
-    return row + details
+def tile(prefix: str, value: str, color: str, arrow_txt: str = "") -> str:
+    # пример: 🟨 Debut: 2002 ⬆️
+    extra = f" {arrow_txt}" if arrow_txt else ""
+    return f"{color} {prefix}: {value}{extra}"
+
+def build_feedback_spotle(guess: Player, answer: Player) -> str:
+    # Debut: near +/-2 years
+    debut_color = color_numeric(guess.debut_year, answer.debut_year, near_delta=2)
+    debut_arrow = arrow(guess.debut_year, answer.debut_year) if guess.debut_year != answer.debut_year else "✅"
+
+    # Club: exact
+    club_ok = norm(guess.iconic_club) == norm(answer.iconic_club)
+    club_color = color_bool(club_ok)
+    club_value = f"{guess.club_emoji} {guess.iconic_club}".strip()
+
+    # FIFA: near +/-20
+    fifa_color = color_numeric(guess.fifa_rating, answer.fifa_rating, near_delta=20)
+    fifa_arrow = arrow(guess.fifa_rating, answer.fifa_rating) if guess.fifa_rating != answer.fifa_rating else "✅"
+
+    # Awards: near +/-1
+    awards_color = color_numeric(guess.top_awards, answer.top_awards, near_delta=1)
+    awards_arrow = arrow(guess.top_awards, answer.top_awards) if guess.top_awards != answer.top_awards else "✅"
+
+    # Position: exact group
+    pos_ok = guess.position_group == answer.position_group
+    pos_color = color_bool(pos_ok)
+
+    # Country: exact
+    ctry_ok = norm(guess.birth_country) == norm(answer.birth_country)
+    ctry_color = color_bool(ctry_ok)
+
+    tiles = [
+        tile("Debut", str(guess.debut_year), debut_color, debut_arrow),
+        tile("Club", club_value, club_color, ""),
+        tile("FIFA", str(guess.fifa_rating), fifa_color, fifa_arrow),
+        tile("Awards", str(guess.top_awards), awards_color, awards_arrow),
+        tile("Position", POS_RU.get(guess.position_group, guess.position_group), pos_color, ""),
+        tile("Country", guess.birth_country, ctry_color, ""),
+    ]
+
+    # 2 строки по 3 плитки (как “6 прямоугольничков”)
+    line1 = " | ".join(tiles[:3])
+    line2 = " | ".join(tiles[3:])
+
+    return f"{line1}\n{line2}"
 
 def resolve_guess_to_player(text: str) -> Optional[Player]:
     key = norm(text)
@@ -225,23 +259,20 @@ async def cmd_start(m: Message):
         "/play — начать сегодняшнюю игру заново\n"
         "/status — мои попытки сегодня\n"
         "/help — помощь\n\n"
-        "Просто отправляй имя игрока сообщением."
+        "Пиши имя игрока (пример: messi)."
     )
 
 @dp.message(Command("help"))
 async def cmd_help(m: Message):
     await m.answer(
-        "Как играть:\n"
-        "1) /play\n"
-        "2) Пиши имя футболиста (как в базе)\n\n"
         "Обозначения:\n"
-        "✅ совпало\n"
-        "❌ не совпало\n"
-        "↑ нужно больше (позже/выше)\n"
-        "↓ нужно меньше (раньше/ниже)\n\n"
-        f"Попыток: {MAX_ATTEMPTS}\n"
-        "Позиции: GK / DEF / MID / FWD\n\n"
-        "После победы/проигрыша можно снова сыграть: /play"
+        "🟩 точно\n"
+        "🟨 близко\n"
+        "🟥 далеко/не совпало\n"
+        "⬆️ нужно больше / позже\n"
+        "⬇️ нужно меньше / раньше\n\n"
+        f"Попыток в одном забеге: {MAX_ATTEMPTS}\n"
+        "Можно перезапускать сегодня сколько угодно раз командой /play."
     )
 
 @dp.message(Command("play"))
@@ -267,11 +298,11 @@ async def cmd_status(m: Message):
         await m.answer("Сегодня попыток ещё нет. Нажми /play")
         return
 
-    lines = []
+    # Показать “как в спотле”: каждая попытка = 2 строки плиток
+    blocks = []
     for n, guess, fb in hist:
-        first_line = fb.split("\n", 1)[0]
-        lines.append(f"{n}) {guess}\n{first_line}")
-    await m.answer("\n\n".join(lines))
+        blocks.append(f"{n}) {guess}\n{fb}")
+    await m.answer("\n\n".join(blocks))
 
 @dp.message(F.text)
 async def on_guess(m: Message):
@@ -291,28 +322,28 @@ async def on_guess(m: Message):
 
         attempts = row[0] if row else 0
 
+        # лимит попыток
         if attempts >= MAX_ATTEMPTS:
             await finish_run(db, m.from_user.id, day)
             await db.commit()
-            await m.answer(f"😕 Попытки закончились. Ответ: {answer.name}\n\nНапиши /play чтобы сыграть заново.")
+            await m.answer(f"😕 Попытки закончились. Ответ: {answer.name}\n\n/play — чтобы сыграть заново.")
             return
 
-        if guess_player.id == answer.id:
-            fb = "🎉 Верно!\n" + build_feedback(guess_player, answer)
-            await add_attempt(db, m.from_user.id, day, m.text, fb)
-            await finish_run(db, m.from_user.id, day)
-            await db.commit()
-            await m.answer(f"{fb}\n\n✅ Победа за {attempts+1}/{MAX_ATTEMPTS} попыток!\nНапиши /play чтобы сыграть заново.")
-            return
-
-        fb = build_feedback(guess_player, answer)
+        fb = build_feedback_spotle(guess_player, answer)
         await add_attempt(db, m.from_user.id, day, m.text, fb)
 
-        # если это была последняя попытка
+        # победа?
+        if guess_player.id == answer.id:
+            await finish_run(db, m.from_user.id, day)
+            await db.commit()
+            await m.answer(f"🎉 Верно!\n{fb}\n\n✅ Победа за {attempts+1}/{MAX_ATTEMPTS}!\n/play — сыграть заново.")
+            return
+
+        # последняя попытка?
         if attempts + 1 >= MAX_ATTEMPTS:
             await finish_run(db, m.from_user.id, day)
             await db.commit()
-            await m.answer(f"{fb}\n\n😕 Попытки закончились. Ответ: {answer.name}\n\nНапиши /play чтобы сыграть заново.")
+            await m.answer(f"{fb}\n\n😕 Попытки закончились. Ответ: {answer.name}\n\n/play — сыграть заново.")
             return
 
         await db.commit()
