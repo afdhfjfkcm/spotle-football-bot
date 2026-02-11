@@ -17,7 +17,7 @@ DB_PATH = "game.db"
 PLAYERS_PATH = "players.json"
 PUZZLES_PATH = "puzzles.json"
 
-MAX_ATTEMPTS = 6
+MAX_ATTEMPTS = 10
 
 # -------------------- Models --------------------
 @dataclass
@@ -192,6 +192,18 @@ async def finish_run(db, user_id: int, day: str):
         (user_id, day)
     )
 
+async def reset_run(db, user_id: int, day: str):
+    # удалить попытки
+    await db.execute(
+        "DELETE FROM user_attempts WHERE user_id=? AND day=?",
+        (user_id, day)
+    )
+    # сбросить/создать run
+    await db.execute(
+        "INSERT OR REPLACE INTO user_runs(user_id, day, attempts, finished) VALUES(?, ?, 0, 0)",
+        (user_id, day)
+    )
+
 async def get_history(db, user_id: int, day: str) -> List[Tuple[int, str, str]]:
     cur = await db.execute(
         "SELECT n, guess, feedback FROM user_attempts WHERE user_id=? AND day=? ORDER BY n",
@@ -236,12 +248,13 @@ async def cmd_help(m: Message):
 @dp.message(Command("play"))
 async def cmd_play(m: Message):
     day = dt.date.today().isoformat()
+
     async with aiosqlite.connect(DB_PATH) as db:
-        await ensure_run(db, m.from_user.id, day)
+        await reset_run(db, m.from_user.id, day)
         await db.commit()
 
     await m.answer(
-        f"🎯 Игра дня ({day}) началась!\n"
+        f"🎯 Игра дня ({day}) началась заново!\n"
         f"Попыток: {MAX_ATTEMPTS}\n"
         "Напиши имя игрока."
     )
@@ -273,11 +286,11 @@ async def on_guess(m: Message):
         await m.answer("❓ Не нашёл такого игрока в базе. Попробуй другое написание/алиас.")
         return
 
-    async with aiosqlite.connect(DB_PATH) as db:
-        row = await get_run(db, m.from_user.id, day)
-        if row and row[1] == 1:
-            await m.answer("Сегодня ты уже закончил игру 🙂")
-            return
+    row = await get_run(db, m.from_user.id, day)
+    if row and row[1] == 1:
+        await m.answer("Эта игра уже завершена. Напиши /play чтобы начать сегодняшнюю игру заново.")
+        return
+
 
         attempts = row[0] if row else 0
         if attempts >= MAX_ATTEMPTS:
