@@ -30,6 +30,16 @@ PUZZLES_PATH = "puzzles.json"
 MAX_ATTEMPTS = 10
 SUGGEST_LIMIT = 8
 
+# --- DEV (кто может ставить игрока на дату) ---
+# В .env добавь DEV_USER_IDS="123,456" (это telegram user_id)
+DEV_USER_IDS = set()
+_raw_dev = (os.getenv("DEV_USER_IDS") or "").strip()
+if _raw_dev:
+    try:
+        DEV_USER_IDS = {int(x.strip()) for x in _raw_dev.split(",") if x.strip()}
+    except Exception:
+        DEV_USER_IDS = set()
+
 
 # -------------------- Models --------------------
 @dataclass
@@ -263,6 +273,15 @@ CREATE TABLE IF NOT EXISTS user_flow (
   mode TEXT,
   created_at TEXT NOT NULL
 );
+
+-- overrides for "game of the day" (dev only)
+-- date_iso = 'YYYY-MM-DD'
+CREATE TABLE IF NOT EXISTS daily_overrides (
+  date_iso TEXT PRIMARY KEY,
+  player_id TEXT NOT NULL,
+  set_by_user_id INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
 """
 
 
@@ -416,6 +435,45 @@ async def get_flow(db, user_id: int) -> Optional[str]:
     return row[0] if row else None
 
 
+# ---- daily override helpers ----
+def parse_date_iso(s: str) -> Optional[str]:
+    s = (s or "").strip()
+    try:
+        d = dt.date.fromisoformat(s)
+        return d.isoformat()
+    except Exception:
+        return None
+
+
+async def get_daily_override(db, date_iso: str) -> Optional[str]:
+    cur = await db.execute("SELECT player_id FROM daily_overrides WHERE date_iso=?", (date_iso,))
+    row = await cur.fetchone()
+    return row[0] if row else None
+
+
+async def set_daily_override(db, date_iso: str, player_id: str, set_by_user_id: int):
+    await db.execute(
+        "INSERT INTO daily_overrides(date_iso, player_id, set_by_user_id, created_at) VALUES(?, ?, ?, ?) "
+        "ON CONFLICT(date_iso) DO UPDATE SET player_id=excluded.player_id, set_by_user_id=excluded.set_by_user_id, created_at=excluded.created_at",
+        (date_iso, player_id, set_by_user_id, dt.datetime.utcnow().isoformat())
+    )
+
+
+async def clear_daily_override(db, date_iso: str):
+    await db.execute("DELETE FROM daily_overrides WHERE date_iso=?", (date_iso,))
+
+
+async def daily_player(today: Optional[dt.date] = None) -> Player:
+    if today is None:
+        today = dt.date.today()
+    date_iso = today.isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        pid = await get_daily_override(db, date_iso)
+    if pid and pid in PLAYERS_BY_ID:
+        return PLAYERS_BY_ID[pid]
+    return puzzle_player_of_the_day(today=today)
+
+
 # -------------------- Keyboards --------------------
 def build_suggest_kb(token: str, players: List[Player]) -> InlineKeyboardMarkup:
     rows = []
@@ -538,7 +596,7 @@ async def start_random_game(m: Message):
 
 async def start_daily_game(m: Message):
     day = dt.date.today().isoformat()
-    p = puzzle_player_of_the_day()
+    p = await daily_player(dt.date.today())  # <-- override если есть, иначе puzzles.json
     session_key = f"daily:{day}"
     async with aiosqlite.connect(DB_PATH) as db:
         await create_or_reset_session(db, m.from_user.id, session_key, p.id)
@@ -591,7 +649,6 @@ async def create_challenge_from_query(m: Message, query: str):
             await set_flow(db, m.from_user.id, None)
             await db.commit()
 
-        # ✅ копируемо: отдельными строками в backticks
         await m.answer(
             "✅ Челлендж создан!\n\n"
             "Код:\n"
@@ -625,6 +682,11 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 
+def is_dev(user_id: int) -> bool:
+    # если DEV_USER_IDS пуст — никто не дев (безопаснее)
+    return user_id in DEV_USER_IDS if DEV_USER_IDS else False
+
+
 @dp.message(Command("start"))
 async def cmd_start(m: Message):
     await m.answer(
@@ -638,6 +700,14 @@ async def cmd_start(m: Message):
 
 @dp.message(Command("help"))
 async def cmd_help(m: Message):
+    extra = ""
+    if is_dev(m.from_user.id):
+        extra = (
+            "\nDEV-команды:\n"
+            "• /setdaily YYYY-MM-DD <имя>\n"
+            "• /cleardaily YYYY-MM-DD\n"
+            "• /getdaily YYYY-MM-DD\n"
+        )
     await m.answer(
         "Обозначения:\n"
         "🟩 точно\n"
@@ -646,7 +716,8 @@ async def cmd_help(m: Message):
         "⬆️/⬇️ куда двигаться\n\n"
         "Попыток на забег: 10\n\n"
         "Челлендж:\n"
-        "• 🎯 Челлендж → Создать/Подключиться\n",
+        "• 🎯 Челлендж → Создать/Подключиться\n"
+        + extra,
         reply_markup=persistent_reply_menu()
     )
 
@@ -696,6 +767,108 @@ async def cmd_join(m: Message):
         await m.answer("Напишите так: /join ABC123")
         return
     await start_join_code(m, arg[1])
+
+
+# -------------------- DEV: daily overrides --------------------
+@dp.message(Command("setdaily"))
+async def cmd_setdaily(m: Message):
+    if not is_dev(m.from_user.id):
+        await m.answer("Эта команда доступна только разработчику.")
+        return
+
+    parts = (m.text or "").split(maxsplit=2)
+    # /setdaily 2026-02-20 Messi
+    if len(parts) < 3:
+        await m.answer("Формат:\n`/setdaily YYYY-MM-DD <имя игрока>`", parse_mode="Markdown")
+        return
+
+    date_iso = parse_date_iso(parts[1])
+    if not date_iso:
+        await m.answer("Не поняли дату. Нужно так: YYYY-MM-DD")
+        return
+
+    q = parts[2].strip()
+    p = resolve_guess_to_player(q)
+    if not p:
+        await m.answer("Не нашли такого игрока. Введите точнее (как в базе).")
+        return
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await set_daily_override(db, date_iso, p.id, m.from_user.id)
+        await db.commit()
+
+    await m.answer(
+        "✅ Поставили игрока на дату.\n\n"
+        f"Дата: `{date_iso}`\n"
+        f"Игрок: *{p.name}*\n"
+        f"ID: `{p.id}`",
+        parse_mode="Markdown"
+    )
+
+
+@dp.message(Command("cleardaily"))
+async def cmd_cleardaily(m: Message):
+    if not is_dev(m.from_user.id):
+        await m.answer("Эта команда доступна только разработчику.")
+        return
+
+    parts = (m.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        await m.answer("Формат:\n`/cleardaily YYYY-MM-DD`", parse_mode="Markdown")
+        return
+
+    date_iso = parse_date_iso(parts[1])
+    if not date_iso:
+        await m.answer("Не поняли дату. Нужно так: YYYY-MM-DD")
+        return
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await clear_daily_override(db, date_iso)
+        await db.commit()
+
+    await m.answer(f"✅ Убрали override на `{date_iso}`. Теперь будет игрок из puzzles.json.", parse_mode="Markdown")
+
+
+@dp.message(Command("getdaily"))
+async def cmd_getdaily(m: Message):
+    if not is_dev(m.from_user.id):
+        await m.answer("Эта команда доступна только разработчику.")
+        return
+
+    parts = (m.text or "").split(maxsplit=1)
+    date_iso = None
+    if len(parts) >= 2:
+        date_iso = parse_date_iso(parts[1])
+        if not date_iso:
+            await m.answer("Не поняли дату. Нужно так: YYYY-MM-DD")
+            return
+        day = dt.date.fromisoformat(date_iso)
+    else:
+        day = dt.date.today()
+        date_iso = day.isoformat()
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        override_pid = await get_daily_override(db, date_iso)
+
+    if override_pid and override_pid in PLAYERS_BY_ID:
+        p = PLAYERS_BY_ID[override_pid]
+        await m.answer(
+            f"📅 {date_iso}\n"
+            "Источник: override (DB)\n"
+            f"Игрок: *{p.name}*\n"
+            f"ID: `{p.id}`",
+            parse_mode="Markdown"
+        )
+        return
+
+    p = puzzle_player_of_the_day(today=day)
+    await m.answer(
+        f"📅 {date_iso}\n"
+        "Источник: puzzles.json\n"
+        f"Игрок: *{p.name}*\n"
+        f"ID: `{p.id}`",
+        parse_mode="Markdown"
+    )
 
 
 # --------- Give up callback ----------
@@ -756,7 +929,6 @@ async def on_menu(cb: CallbackQuery):
     action = cb.data.split(":", 1)[1]
     await cb.answer()
 
-    # “прокидываем” в Message-обработчики
     fake = Message.model_validate(cb.message.model_dump())
     fake.from_user = cb.from_user
 
