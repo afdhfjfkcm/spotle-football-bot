@@ -19,6 +19,8 @@ from aiogram.types import (
 )
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
 
+from countries import COUNTRY_TO_CONTINENT, norm_country
+
 load_dotenv()
 
 DB_PATH = "game.db"
@@ -131,33 +133,19 @@ GREY = "⬜️"  # белый вместо чёрного
 
 POS_RU = {"GK": "Вратарь", "DEF": "Защитник", "MID": "Полузащитник", "FWD": "Нападающий"}
 
-COUNTRY_TO_CONTINENT = {
-    # Europe
-    "italy": "europe", "france": "europe", "spain": "europe", "portugal": "europe",
-    "england": "europe", "uk": "europe", "united kingdom": "europe",
-    "netherlands": "europe", "germany": "europe", "croatia": "europe", "serbia": "europe",
-    "belgium": "europe", "poland": "europe", "sweden": "europe", "norway": "europe",
-    "denmark": "europe", "switzerland": "europe", "austria": "europe", "russia": "europe",
-    # North America
-    "usa": "north_america", "united states": "north_america", "mexico": "north_america", "canada": "north_america",
-    # South America
-    "brazil": "south_america", "argentina": "south_america", "uruguay": "south_america", "colombia": "south_america", "chile": "south_america",
-    # Asia
-    "japan": "asia", "south korea": "asia", "korea": "asia", "china": "asia", "iran": "asia", "saudi arabia": "asia", "turkey": "asia",
-    # Africa
-    "nigeria": "africa", "senegal": "africa", "egypt": "africa", "morocco": "africa", "cameroon": "africa",
-    # Oceania
-    "australia": "oceania", "new zealand": "oceania",
-}
-
 def continent_of(country: str) -> str:
-    return COUNTRY_TO_CONTINENT.get(norm(country), "unknown")
+    c = norm_country(country)
+    return COUNTRY_TO_CONTINENT.get(c, "unknown")
 
 def country_color(guess_country: str, answer_country: str) -> str:
-    if norm(guess_country) == norm(answer_country):
+    g0 = norm_country(guess_country)
+    a0 = norm_country(answer_country)
+
+    if g0 == a0:
         return GREEN
-    g = continent_of(guess_country)
-    a = continent_of(answer_country)
+
+    g = continent_of(g0)
+    a = continent_of(a0)
     if g != "unknown" and g == a:
         return YELLOW
     return GREY
