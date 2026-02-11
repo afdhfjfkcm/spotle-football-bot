@@ -82,8 +82,8 @@ def load_puzzles() -> Dict[str, Any]:
 PLAYERS_BY_ID, ALIAS_TO_ID = load_players()
 PUZZLES = load_puzzles()
 
-# build search index for substring matches (name + aliases)
-SEARCH_INDEX: List[Tuple[str, str]] = []  # (search_blob, player_id)
+# search index for substring matches (name + aliases)
+SEARCH_INDEX: List[Tuple[str, str]] = []
 for pid, p in PLAYERS_BY_ID.items():
     blob = norm(p.name) + " " + " ".join(norm(a) for a in p.aliases)
     SEARCH_INDEX.append((blob, pid))
@@ -126,7 +126,7 @@ def resolve_guess_to_player(text: str) -> Optional[Player]:
 # -------------------- UI / feedback (Spotle-like) --------------------
 GREEN = "🟩"
 YELLOW = "🟨"
-GREY = "⬛️"  # вместо красного
+GREY = "⬜️"  # <-- было ⬛️, теперь белый
 
 POS_RU = {"GK": "Вратарь", "DEF": "Защитник", "MID": "Полузащитник", "FWD": "Нападающий"}
 
@@ -250,9 +250,11 @@ CREATE TABLE IF NOT EXISTS challenges (
   created_at TEXT NOT NULL
 );
 
+-- purpose: 'guess' | 'challenge'
 CREATE TABLE IF NOT EXISTS user_suggestions (
   user_id INTEGER PRIMARY KEY,
   token TEXT NOT NULL,
+  purpose TEXT NOT NULL,
   created_at TEXT NOT NULL,
   choices_json TEXT NOT NULL
 );
@@ -350,26 +352,27 @@ def _token(n: int = 10) -> str:
     alphabet = string.ascii_lowercase + string.digits
     return "".join(random.choice(alphabet) for _ in range(n))
 
-async def set_suggestions(db, user_id: int, choices: List[str]) -> str:
+async def set_suggestions(db, user_id: int, choices: List[str], purpose: str) -> str:
     token = _token(10)
     await db.execute(
-        "INSERT INTO user_suggestions(user_id, token, created_at, choices_json) VALUES(?, ?, ?, ?) "
-        "ON CONFLICT(user_id) DO UPDATE SET token=excluded.token, created_at=excluded.created_at, choices_json=excluded.choices_json",
-        (user_id, token, dt.datetime.utcnow().isoformat(), json.dumps(choices, ensure_ascii=False))
+        "INSERT INTO user_suggestions(user_id, token, purpose, created_at, choices_json) VALUES(?, ?, ?, ?, ?) "
+        "ON CONFLICT(user_id) DO UPDATE SET token=excluded.token, purpose=excluded.purpose, created_at=excluded.created_at, choices_json=excluded.choices_json",
+        (user_id, token, purpose, dt.datetime.utcnow().isoformat(), json.dumps(choices, ensure_ascii=False))
     )
     return token
 
-async def get_suggestions(db, user_id: int) -> Optional[Tuple[str, List[str]]]:
-    cur = await db.execute("SELECT token, choices_json FROM user_suggestions WHERE user_id=?", (user_id,))
+async def get_suggestions(db, user_id: int) -> Optional[Tuple[str, str, List[str]]]:
+    cur = await db.execute("SELECT token, purpose, choices_json FROM user_suggestions WHERE user_id=?", (user_id,))
     row = await cur.fetchone()
     if not row:
         return None
     token = row[0]
+    purpose = row[1]
     try:
-        choices = json.loads(row[1])
+        choices = json.loads(row[2])
     except Exception:
         choices = []
-    return token, choices
+    return token, purpose, choices
 
 async def clear_suggestions(db, user_id: int):
     await db.execute("DELETE FROM user_suggestions WHERE user_id=?", (user_id,))
@@ -459,7 +462,7 @@ async def cmd_help(m: Message):
         "Обозначения:\n"
         "🟩 точно\n"
         "🟨 близко\n"
-        "⬛️ не совпало\n"
+        "⬜️ не совпало\n"
         "⬆️/⬇️ куда двигаться\n\n"
         f"Попыток на забег: {MAX_ATTEMPTS}\n"
         "Режимы:\n"
@@ -510,30 +513,30 @@ async def cmd_challenge(m: Message):
         return
 
     p = resolve_guess_to_player(arg[1])
-    if not p:
-        # попробуем подсказки по подстроке
-        sugg = find_players_by_substring(arg[1], limit=SUGGEST_LIMIT)
-        if not sugg:
-            await m.answer("❓ Не нашла такого игрока. Попробуй другое написание.")
-            return
-        # если несколько — попросим выбрать кнопкой (через suggestions)
+    if p:
         async with aiosqlite.connect(DB_PATH) as db:
-            token = await set_suggestions(db, m.from_user.id, [x.id for x in sugg])
+            code = await create_challenge(db, m.from_user.id, p.id)
             await db.commit()
-        kb = build_suggest_kb(token, sugg)
-        await m.answer("🔎 Для челленджа выбери игрока кнопкой:", reply_markup=kb)
+        await m.answer(
+            "✅ Челлендж создан!\n"
+            f"Код: `{code}`\n\n"
+            "Отправь другу этот код.\n"
+            "Друг запускает: /join CODE"
+        )
+        return
+
+    # если точного совпадения нет — показываем кнопки выбора ИМЕННО ДЛЯ ЧЕЛЛЕНДЖА
+    sugg = find_players_by_substring(arg[1], limit=SUGGEST_LIMIT)
+    if not sugg:
+        await m.answer("❓ Не нашла такого игрока. Попробуй другое написание (минимум 3 символа).")
         return
 
     async with aiosqlite.connect(DB_PATH) as db:
-        code = await create_challenge(db, m.from_user.id, p.id)
+        token = await set_suggestions(db, m.from_user.id, [x.id for x in sugg], purpose="challenge")
         await db.commit()
 
-    await m.answer(
-        "✅ Челлендж создан!\n"
-        f"Код: `{code}`\n\n"
-        "Отправь другу этот код.\n"
-        "Друг запускает: /join CODE"
-    )
+    kb = build_suggest_kb(token, sugg)
+    await m.answer("🔎 Для челленджа выбери игрока кнопкой:", reply_markup=kb)
 
 @dp.message(Command("join"))
 async def cmd_join(m: Message):
@@ -596,7 +599,8 @@ async def on_suggest_click(cb: CallbackQuery):
         if not row:
             await cb.answer("Подсказки устарели. Напиши запрос заново.", show_alert=True)
             return
-        saved_token, choices = row
+
+        saved_token, purpose, choices = row
         if saved_token != token:
             await cb.answer("Подсказки устарели. Напиши запрос заново.", show_alert=True)
             return
@@ -606,22 +610,18 @@ async def on_suggest_click(cb: CallbackQuery):
 
         pid = choices[idx - 1]
         await clear_suggestions(db, cb.from_user.id)
-        await db.commit()
 
-    p = PLAYERS_BY_ID.get(pid)
-    if not p:
-        await cb.answer("Игрок не найден.", show_alert=True)
-        return
+        p = PLAYERS_BY_ID.get(pid)
+        if not p:
+            await db.commit()
+            await cb.answer("Игрок не найден.", show_alert=True)
+            return
 
-    await cb.answer()
-
-    # Если пользователь нажал кнопку после /challenge ... и НЕТ активной сессии,
-    # считаем это выбором игрока для челленджа: создаём код.
-    async with aiosqlite.connect(DB_PATH) as db:
-        active = await get_active_session(db, cb.from_user.id)
-        if not active:
+        # IMPORTANT: если это выбор для челленджа — создаём код и НЕ показываем параметры
+        if purpose == "challenge":
             code = await create_challenge(db, cb.from_user.id, p.id)
             await db.commit()
+            await cb.answer()
             await cb.message.answer(
                 "✅ Челлендж создан!\n"
                 f"Код: `{code}`\n\n"
@@ -630,7 +630,10 @@ async def on_suggest_click(cb: CallbackQuery):
             )
             return
 
-    # Иначе — это обычная догадка в активной игре
+        # иначе это выбор для обычной догадки
+        await db.commit()
+
+    await cb.answer()
     await handle_guess(cb.from_user.id, cb.message.answer, p)
 
 
@@ -639,20 +642,20 @@ async def on_suggest_click(cb: CallbackQuery):
 async def on_guess(m: Message):
     text = (m.text or "").strip()
 
-    # 1) exact match via aliases
+    # exact match
     p = resolve_guess_to_player(text)
     if p:
         await handle_guess(m.from_user.id, m.answer, p)
         return
 
-    # 2) substring suggestions with buttons
+    # substring suggestions (purpose = guess)
     sugg = find_players_by_substring(text, limit=SUGGEST_LIMIT)
     if not sugg:
         await m.answer("❓ Не нашла такого игрока. Попробуй другое написание (минимум 3 символа).")
         return
 
     async with aiosqlite.connect(DB_PATH) as db:
-        token = await set_suggestions(db, m.from_user.id, [x.id for x in sugg])
+        token = await set_suggestions(db, m.from_user.id, [x.id for x in sugg], purpose="guess")
         await db.commit()
 
     kb = build_suggest_kb(token, sugg)
