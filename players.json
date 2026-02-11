@@ -1,0 +1,35 @@
+[
+  {
+    "id": "messi",
+    "name": "Lionel Messi",
+    "aliases": ["messi", "lionel messi", "лионель месси", "месси", "лео месси"],
+    "debut_year": 2004,
+    "iconic_club": "Barcelona",
+    "fifa_rating": 93,
+    "top_awards": 8,
+    "position_group": "FWD",
+    "birth_country": "Argentina"
+  },
+  {
+    "id": "ronaldo",
+    "name": "Cristiano Ronaldo",
+    "aliases": ["ronaldo", "cristiano ronaldo", "криштиану роналду", "cr7", "роналду"],
+    "debut_year": 2002,
+    "iconic_club": "Real Madrid",
+    "fifa_rating": 90,
+    "top_awards": 5,
+    "position_group": "FWD",
+    "birth_country": "Portugal"
+  },
+  {
+    "id": "buffon",
+    "name": "Gianluigi Buffon",
+    "aliases": ["buffon", "gianluigi buffon", "буффон", "джанлуиджи буффон"],
+    "debut_year": 1995,
+    "iconic_club": "Juventus",
+    "fifa_rating": 88,
+    "top_awards": 0,
+    "position_group": "GK",
+    "birth_country": "Italy"
+  }
+]
