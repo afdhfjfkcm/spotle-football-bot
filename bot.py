@@ -19,9 +19,8 @@ from aiogram.types import (
 )
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
 
-# Если ты вынесла страны в отдельный файл:
-# from countries import COUNTRY_TO_CONTINENT, norm_country
-# Если пока НЕ вынесла — закомментируй строку выше и используй свои функции/словарь как раньше.
+
+from countries import COUNTRY_TO_CONTINENT, norm_country
 
 load_dotenv()
 
@@ -151,9 +150,6 @@ POS_RU = {"GK": "Вратарь", "DEF": "Защитник", "MID": "Полуз�
 #         return YELLOW
 #     return GREY
 
-# ---- заглушка, если countries.py еще не подключала (потом заменишь) ----
-def country_color(guess_country: str, answer_country: str) -> str:
-    return GREEN if norm(guess_country) == norm(answer_country) else GREY
 
 def arrow_need(guess_val: int, answer_val: int) -> str:
     if guess_val == answer_val:
