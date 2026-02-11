@@ -32,6 +32,7 @@ class Player:
     position_group: str  # GK/DEF/MID/FWD
     birth_country: str
 
+
 # -------------------- Load data --------------------
 def norm(s: str) -> str:
     return " ".join(s.strip().lower().split())
@@ -86,6 +87,7 @@ def puzzle_player_of_the_day(today: Optional[dt.date] = None) -> Player:
         raise RuntimeError(f"puzzles.json: player id '{pid}' не найден в players.json")
     return PLAYERS_BY_ID[pid]
 
+
 # -------------------- Feedback (Spotle-like) --------------------
 def arrow_compare(guess_val: int, answer_val: int) -> str:
     if guess_val == answer_val:
@@ -98,23 +100,19 @@ def eq_mark(guess: str, answer: str) -> str:
 POS_RU = {"GK": "Вратарь", "DEF": "Защитник", "MID": "Полузащитник", "FWD": "Нападающий"}
 
 def build_feedback(guess: Player, answer: Player) -> str:
-    # Year / Rating / Awards: arrow
-    year_mark   = arrow_compare(guess.debut_year, answer.debut_year)
-    fifa_mark   = arrow_compare(guess.fifa_rating, answer.fifa_rating)
-    award_mark  = arrow_compare(guess.top_awards, answer.top_awards)
+    year_mark  = arrow_compare(guess.debut_year, answer.debut_year)
+    fifa_mark  = arrow_compare(guess.fifa_rating, answer.fifa_rating)
+    award_mark = arrow_compare(guess.top_awards, answer.top_awards)
 
-    # Others: exact match
-    club_mark   = eq_mark(guess.iconic_club, answer.iconic_club)
-    pos_mark    = "✅" if guess.position_group == answer.position_group else "❌"
-    ctry_mark   = eq_mark(guess.birth_country, answer.birth_country)
+    club_mark = eq_mark(guess.iconic_club, answer.iconic_club)
+    pos_mark  = "✅" if guess.position_group == answer.position_group else "❌"
+    ctry_mark = eq_mark(guess.birth_country, answer.birth_country)
 
-    # Compact “row” like Spotle
     row = (
         f"Дебют {year_mark} | Клуб {club_mark} | FIFA {fifa_mark} | Награды {award_mark} | "
         f"Позиция {pos_mark} | Страна {ctry_mark}"
     )
 
-    # Helpful details (so arrows make sense)
     details = (
         f"\n\nТвоя догадка: {guess.name}\n"
         f"• Дебют: {guess.debut_year}\n"
@@ -132,6 +130,7 @@ def resolve_guess_to_player(text: str) -> Optional[Player]:
     if not pid:
         return None
     return PLAYERS_BY_ID[pid]
+
 
 # -------------------- DB --------------------
 CREATE_TABLES_SQL = """
@@ -193,12 +192,10 @@ async def finish_run(db, user_id: int, day: str):
     )
 
 async def reset_run(db, user_id: int, day: str):
-    # удалить попытки
     await db.execute(
         "DELETE FROM user_attempts WHERE user_id=? AND day=?",
         (user_id, day)
     )
-    # сбросить/создать run
     await db.execute(
         "INSERT OR REPLACE INTO user_runs(user_id, day, attempts, finished) VALUES(?, ?, 0, 0)",
         (user_id, day)
@@ -210,6 +207,7 @@ async def get_history(db, user_id: int, day: str) -> List[Tuple[int, str, str]]:
         (user_id, day)
     )
     return await cur.fetchall()
+
 
 # -------------------- Bot --------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -224,7 +222,7 @@ async def cmd_start(m: Message):
     await m.answer(
         "⚽️ Spotle-подобная игра про футболистов.\n\n"
         "Команды:\n"
-        "/play — начать игру дня\n"
+        "/play — начать сегодняшнюю игру заново\n"
         "/status — мои попытки сегодня\n"
         "/help — помощь\n\n"
         "Просто отправляй имя игрока сообщением."
@@ -242,13 +240,13 @@ async def cmd_help(m: Message):
         "↑ нужно больше (позже/выше)\n"
         "↓ нужно меньше (раньше/ниже)\n\n"
         f"Попыток: {MAX_ATTEMPTS}\n"
-        "Позиции: GK / DEF / MID / FWD"
+        "Позиции: GK / DEF / MID / FWD\n\n"
+        "После победы/проигрыша можно снова сыграть: /play"
     )
 
 @dp.message(Command("play"))
 async def cmd_play(m: Message):
     day = dt.date.today().isoformat()
-
     async with aiosqlite.connect(DB_PATH) as db:
         await reset_run(db, m.from_user.id, day)
         await db.commit()
@@ -269,7 +267,6 @@ async def cmd_status(m: Message):
         await m.answer("Сегодня попыток ещё нет. Нажми /play")
         return
 
-    # показываем компактно: строка фидбека без деталей
     lines = []
     for n, guess, fb in hist:
         first_line = fb.split("\n", 1)[0]
@@ -286,17 +283,18 @@ async def on_guess(m: Message):
         await m.answer("❓ Не нашёл такого игрока в базе. Попробуй другое написание/алиас.")
         return
 
-    row = await get_run(db, m.from_user.id, day)
-    if row and row[1] == 1:
-        await m.answer("Эта игра уже завершена. Напиши /play чтобы начать сегодняшнюю игру заново.")
-        return
-
+    async with aiosqlite.connect(DB_PATH) as db:
+        row = await get_run(db, m.from_user.id, day)
+        if row and row[1] == 1:
+            await m.answer("Этот забег уже завершён. Напиши /play чтобы начать сегодняшнюю игру заново.")
+            return
 
         attempts = row[0] if row else 0
+
         if attempts >= MAX_ATTEMPTS:
             await finish_run(db, m.from_user.id, day)
             await db.commit()
-            await m.answer(f"😕 Попытки закончились. Ответ: {answer.name}")
+            await m.answer(f"😕 Попытки закончились. Ответ: {answer.name}\n\nНапиши /play чтобы сыграть заново.")
             return
 
         if guess_player.id == answer.id:
@@ -304,7 +302,7 @@ async def on_guess(m: Message):
             await add_attempt(db, m.from_user.id, day, m.text, fb)
             await finish_run(db, m.from_user.id, day)
             await db.commit()
-            await m.answer(f"{fb}\n\n✅ Победа за {attempts+1}/{MAX_ATTEMPTS} попыток!")
+            await m.answer(f"{fb}\n\n✅ Победа за {attempts+1}/{MAX_ATTEMPTS} попыток!\nНапиши /play чтобы сыграть заново.")
             return
 
         fb = build_feedback(guess_player, answer)
@@ -314,12 +312,13 @@ async def on_guess(m: Message):
         if attempts + 1 >= MAX_ATTEMPTS:
             await finish_run(db, m.from_user.id, day)
             await db.commit()
-            await m.answer(f"{fb}\n\n😕 Попытки закончились. Ответ: {answer.name}")
+            await m.answer(f"{fb}\n\n😕 Попытки закончились. Ответ: {answer.name}\n\nНапиши /play чтобы сыграть заново.")
             return
 
         await db.commit()
 
     await m.answer(fb)
+
 
 # -------------------- Run --------------------
 async def main():
